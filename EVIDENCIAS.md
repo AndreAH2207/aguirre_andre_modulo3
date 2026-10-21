@@ -86,3 +86,87 @@ Quantity >
 ```
 
 Si la cantidad no es un número entero (por ejemplo "abc"), el programa responde `Quantity must be a whole number.` y termina sin evaluar.
+
+## Hito 2 · Router + RAG + SQL + Tools
+
+Proveedor: Google Gemini (tier gratuito) vía `openai_compatible`. Modelo `gemini-3.1-flash-lite`; embeddings `gemini-embedding-001`.
+
+### Benchmark del router (12 casos)
+
+`uv run python benchmark.py`
+
+| # | Consulta | Esperado | Reglas | Modelo | Híbrido |
+|---|---|---|---|---|---|
+| 1 | ¿Qué dice la política sobre venderle a un cliente en hold? | rag | rag | rag | rag |
+| 2 | ¿Quién debe aprobar un pedido que supera el monto de revisión? | rag | rag | rag | rag |
+| 3 | ¿Cuánto le hemos facturado a C-1003 en 2026? | sql | sql | sql | sql |
+| 4 | ¿Cuántas unidades de KRN-900X vendimos este año? | sql | sql | sql | sql |
+| 5 | ¿Cuánto nos debe actualmente C-1003? | tools | tools | tools | tools |
+| 6 | ¿Hay stock de CYC-3DX? | tools | tools | tools | tools |
+| 7 | Libera 4 KRN-900X para C-1003 | tools | tools | tools | tools |
+| 8 | Libera 9 KRN-900X para C-1003 | tools | tools | tools | tools |
+| 9 | Libera 15 CYC-3DX para C-1003 | tools | tools | tools | tools |
+| 10 | ¿Puedo liberar el pedido? | clarify | clarify | **tools** ✗ | clarify |
+| 11 | ¿Explica que es la exposición crediticia? | direct | **tools** ✗ | direct | **tools** ✗ |
+| 12 | ¿Por qué las empresas B2B venden a plazo? | direct | direct (0,55) | direct | direct (vía modelo) |
+| | **Precisión** | | **92 %** | **92 %** | **92 %** |
+| | **Tiempo** | | 0,00 s | 137,25 s | 1,99 s |
+
+El caso 12 es el único donde el híbrido consulta al modelo: la regla queda en 0,55, bajo el umbral de 0,90.
+
+### Errores del router
+
+**Caso 11, router por reglas e híbrido.** La consulta contiene "exposicion", que es palabra clave de tools, y la regla de tools se revisa antes que la de preguntas conceptuales. Además empieza con "¿", así que tampoco calza con `startswith("explica")`. La regla responde con confianza 0,92, mayor que el umbral, y el híbrido no consulta al modelo. El modelo solo sí acierta.
+
+**Caso 10, router por modelo.** "¿Puedo liberar el pedido?" no tiene cliente ni SKU, pero el modelo la manda a `tools`. Las reglas aciertan porque revisan explícitamente que haya un identificador. En el híbrido gana la regla (confianza 0,95), así que el error del modelo no llega al usuario.
+
+### RAG: 3 consultas
+
+| Consulta | Ruta | Primer resultado | Score |
+|---|---|---|---|
+| ¿Qué dice la política sobre venderle a un cliente en hold? | rag | `[RAG:credit_policy.md#Clientes en hold]` | 0,7925 |
+| ¿Quién debe aprobar un pedido que supera el monto de revisión? | rag | `[RAG:credit_policy.md#Monto de revisión]` | 0,8076 |
+| ¿Hay stock de CYC-3DX? | **tools: no usa RAG** | — (responde `get_stock`: 14 unidades) | — |
+
+Respuesta del agente a la primera consulta (`uv run python main.py`):
+
+```
+"answer": "La política establece que un cliente con estado de crédito 'hold' se encuentra bloqueado. En esta situación, no es posible liberar pedidos de forma automática; cualquier pedido realizado por un cliente en este estado debe pasar obligatoriamente por una revisión del equipo de Finanzas o Crédito, quienes determinarán si se aprueba una excepción.",
+"facts": [
+  "Un cliente con estado de crédito 'hold' está bloqueado [RAG:credit_policy.md#Clientes en hold].",
+  ...
+  "La verificación de que el cliente no esté en 'hold' es uno de los pasos previos para la liberación automática de un pedido [RAG:release_policy.md#Pasos para liberar un pedido]."
+]
+```
+
+### SQL: 3 pruebas (`tests/test_tools.py`)
+
+| Prueba | Llamada | Resultado |
+|---|---|---|
+| Facturación por cliente y año | `sales_summary(customer_id="C-1003", year=2026)` | 4 ventas, 28 559,80 USD |
+| Unidades por SKU | `sales_summary(sku="KRN-900X")` | 5 unidades, `source_ref` `[SQL:sales]` |
+| Año sin ventas | `sales_summary(customer_id="C-1003", year=2025)` | 0 ventas, sin error |
+
+Respuesta del agente a "¿Cuánto le hemos facturado a C-1003 en 2026?": ruta `sql`, "La facturación total para el cliente C-1003 en el año 2026 es de 28,559.80 USD", con la fuente `[SQL:sales]`.
+
+### Tools: 4 pruebas (`tests/test_tools.py`)
+
+| Prueba | Llamada | Resultado |
+|---|---|---|
+| Línea disponible | `get_customer("C-1003")` | `available_credit_usd` = 20 000 |
+| Cliente inexistente | `get_customer("C-0000")` | `ok: false`, `not_found`, recuperable |
+| Revisión por monto | `calculate_release("C-1003", "KRN-900X", 7)` | `REVIEW`, un solo motivo |
+| Stock insuficiente | `calculate_release("C-1003", "CYC-3DX", 15)` | `REJECT` |
+
+Respuesta del agente a "Libera 9 KRN-900X para C-1003": ruta `tools`, "El pedido no ha sido liberado automáticamente y ha pasado a revisión por el departamento de Finanzas", con los dos motivos de `calculate_release`: exposición proyectada 32 054,50 sobre el límite de 30 000, y pedido de 22 054,50 sobre el monto de revisión de 15 000.
+
+### Caso sin ninguna tool
+
+"¿Puedo liberar el pedido?" con el router por reglas: ruta `clarify`, responde "¿Que cliente, SKU y cantidad debo considerar?" sin crear el agente ni llamar a ninguna tool.
+
+### Pruebas automáticas
+
+```
+> uv run pytest
+14 passed
+```

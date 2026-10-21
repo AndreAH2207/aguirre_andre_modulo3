@@ -1,0 +1,14 @@
+[
+  {"q": "¿Qué dice la política sobre venderle a un cliente en hold?", "expected": "rag"},
+  {"q": "¿Quién debe aprobar un pedido que supera el monto de revisión?", "expected": "rag"},
+  {"q": "¿Cuánto le hemos facturado a C-1003 en 2026?", "expected": "sql"},
+  {"q": "¿Cuántas unidades de KRN-900X vendimos este año?", "expected": "sql"},
+  {"q": "¿Cuánto nos debe actualmente C-1003?", "expected": "tools"},
+  {"q": "¿Hay stock de CYC-3DX?", "expected": "tools"},
+  {"q": "Libera 4 KRN-900X para C-1003", "expected": "tools"},
+  {"q": "Libera 9 KRN-900X para C-1003", "expected": "tools"},
+  {"q": "Libera 15 CYC-3DX para C-1003", "expected": "tools"},
+  {"q": "¿Puedo liberar el pedido?", "expected": "clarify"},
+  {"q": "¿Explica que es la exposición crediticia?", "expected": "direct"},
+  {"q": "¿Por qué las empresas B2B venden a plazo?", "expected": "direct"}
+]

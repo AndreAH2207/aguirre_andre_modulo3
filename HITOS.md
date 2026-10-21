@@ -49,3 +49,50 @@ El stock y la exposición de cada cliente. El stock baja con cada venta y la exp
 
 **¿Qué información es documental y qué información es transaccional?**
 Documental: las políticas, por ejemplo qué hacer con un cliente en hold o quién aprueba un pedido grande. Cambian poco, están escritas en texto y se consultan con RAG citando la fuente. Transaccional: las ventas históricas, el stock y la exposición de cada cliente. Son números que se registran con cada operación y se consultan con SQL (historial) o con tools (estado actual).
+
+## Hito 2 · Router + RAG + SQL + Tools
+
+### Qué se construyó
+
+- `router.py`: los tres routers de clase (`DeterministicRouter`, `ModelRouter`, `HybridRouter`) con 5 destinos: `rag`, `sql`, `tools`, `direct` y `clarify`. Se elige con `ROUTER_STRATEGY` en el `.env` (por defecto `hybrid`, umbral 0,90). Las palabras clave se adaptaron a crédito y la consulta se normaliza sin tildes antes de compararla.
+- `rag.py` + `docs/`: dos políticas (`credit_policy.md` y `release_policy.md`), divididas por secciones `##`, buscadas con embeddings y citadas con `source_ref`. La política no escribe la cifra del monto de revisión: el valor vive solo en `case_config.py`.
+- `tools.py`: seis tools con los nombres de clase: `get_product`, `get_stock`, `get_customer` (con línea disponible), `calculate_release` (llama a `rules.py`), `sales_summary` (SQL parametrizado, con filtros opcionales de SKU, cliente y año) y `search_policies` (RAG).
+- `engine.py`: el router elige la ruta y el agente solo recibe las tools de esa ruta. `main.py` ahora recibe una pregunta en lenguaje natural, como en clase.
+- `benchmark.py` y `benchmark_cases.json`: 12 casos de evaluación del router.
+- `tests/`: 7 pruebas del router y 7 de SQL y tools, que no necesitan API.
+
+### Qué falló
+
+- La cuenta de OpenAI no tenía créditos (error 429 `insufficient_quota`). Todo lo que usa el LLM quedó sin poder ejecutarse.
+- Al pasar a Gemini, `gemini-2.5-flash` ya no estaba disponible para cuentas nuevas (error 404). Después, `gemini-3.8-flash` agotó su cuota gratuita de 20 solicitudes diarias con un solo benchmark.
+- El router por reglas manda "¿Explica que es la exposición crediticia?" a `tools` en vez de `direct`, porque contiene "exposicion" y la regla de tools se revisa antes que la de preguntas conceptuales. El híbrido no lo corrige: la confianza de la regla (0,92) supera el umbral, así que nunca consulta al modelo.
+- El router por modelo (`gemini-3.1-flash-lite`) manda "¿Puedo liberar el pedido?" a `tools` aunque no tiene cliente ni SKU. En este caso las reglas sí aciertan (`clarify`).
+- El caso 12 del benchmark se redactó primero con la palabra "ventas" ("riesgo crediticio en ventas B2B") y el router lo mandaba a SQL. Lo cambié por "¿Por qué las empresas B2B venden a plazo?".
+
+### Qué aprendí
+
+- Ningún router es mejor en todo. Las reglas son instantáneas y no gastan cuota, pero fallan con seguridad. El modelo entiende mejor el significado, pero es lento (137 s para 12 consultas) y también se equivoca. El híbrido solo mejora los casos donde las reglas dudan; si la regla está segura y equivocada, el error pasa.
+- El orden de las reglas importa tanto como las palabras clave: la misma palabra puede llevar a rutas distintas según qué regla se revise primero.
+- Depender de un proveedor externo es un riesgo real: en un solo día me quedé sin saldo, con un modelo retirado y con la cuota agotada.
+
+### Qué decisión cambió después de probar
+
+- Proveedor: de OpenAI (como en clase) a Gemini con tier gratuito, usando la opción `openai_compatible` que ya tenía el `model_factory.py` de clase. Se desactivó el tracing del SDK, que intenta enviar trazas a OpenAI.
+- Modelo: de `gemini-3.8-flash` a `gemini-3.1-flash-lite`, por la cuota diaria.
+- "hold" pasó de palabra clave de RAG a palabra clave de tools: "¿C-9999 está en hold?" pregunta por el estado actual del cliente, no por la política.
+- `uv.lock` se excluyó del repositorio, como en clase, y se acotaron los rangos de versiones en `pyproject.toml`.
+
+### Evidencia
+
+En `EVIDENCIAS.md`, sección Hito 2: benchmark de los tres routers, errores del router explicados, 3 pruebas RAG (incluida una que no usa RAG), 3 SQL, 3 tools y ejecuciones del agente de punta a punta.
+
+### Preguntas de razonamiento
+
+**¿Por qué una consulta de ventas históricas no debería resolverse con RAG?**
+Porque la respuesta es un cálculo sobre muchas filas (sumar montos, contar ventas), no un párrafo que se pueda recuperar. RAG trae los textos más parecidos a la pregunta; no suma ni filtra por cliente o año. Con SQL el resultado es exacto y siempre el mismo: "¿Cuánto le hemos facturado a C-1003 en 2026?" da 28 559,80 desde `sales_summary`.
+
+**¿Qué ocurre si el router tiene baja confianza?**
+En el router híbrido, si la regla devuelve una confianza menor a 0,90, la decisión pasa al modelo. Pasa con "¿Por qué las empresas B2B venden a plazo?": ninguna regla aplica, queda en `direct` con 0,55 y el modelo confirma `direct`. El problema es el caso contrario: una regla equivocada pero con confianza alta no se revisa.
+
+**¿Cuál es el costo de enviar toda pregunta a todas las herramientas?**
+Más llamadas al modelo y más tokens, porque el agente tiene que decidir entre seis tools en vez de una o cuatro. También más riesgo: con todas disponibles, el agente podría usar RAG para una pregunta de ventas o llamar a `calculate_release` cuando solo se preguntó por stock. Por eso `engine.py` le da a cada ruta solo sus tools (`_tools_for`).

@@ -1,30 +1,31 @@
-import json
+import asyncio
+import os
 
-from bootstrap_db import DB_PATH, bootstrap
+from dotenv import load_dotenv
+
+# IMPORTANTE: cargar .env ANTES de importar modulos que construyen modelos o clientes.
+load_dotenv()
+
+from bootstrap_db import DB_PATH,bootstrap
 from case_config import print_parameters
-from rules import calculate_release
+from engine import answer
 
 
-def main() -> None:
+async def main()->None:
     print_parameters()
-
     if not DB_PATH.exists():
         bootstrap()
 
-    # Hito 1: no LLM yet, so the order fields are entered one by one.
-    customer_id = input("\nCustomer > ").strip() or "C-1003"
-    sku = input("SKU > ").strip() or "KRN-900X"
-    quantity = input("Quantity > ").strip() or "9"
+    strategy=os.getenv("ROUTER_STRATEGY","hybrid")
+    query=input("\nTu > ").strip() or "Libera 9 KRN-900X para C-1003"
 
-    if not quantity.isdigit():
-        print("\nQuantity must be a whole number.")
-        return
+    decision,response=await answer(query,strategy)
 
-    result = calculate_release(customer_id, sku, int(quantity))
-
-    print("\n=== RELEASE DECISION ===")
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    print("\n=== ROUTING ===")
+    print(decision.model_dump_json(indent=2))
+    print("\n=== RESPONSE ===")
+    print(response.model_dump_json(indent=2))
 
 
-if __name__ == "__main__":
-    main()
+if __name__=="__main__":
+    asyncio.run(main())
