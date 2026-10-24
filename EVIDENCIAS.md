@@ -170,3 +170,100 @@ Respuesta del agente a "Libera 9 KRN-900X para C-1003": ruta `tools`, "El pedido
 > uv run pytest
 14 passed
 ```
+
+## Hito 3 · Workflow con estado
+
+### Diagrama del workflow
+
+Generado desde el grafo con `uv run python workflow_demo.py --diagram`. Las flechas punteadas son aristas condicionales.
+
+```mermaid
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	extract_request(extract_request)
+	validate_order(validate_order)
+	fetch_credit_profile(fetch_credit_profile)
+	compute_exposure(compute_exposure)
+	evaluate_release(evaluate_release)
+	finance_review(finance_review)
+	issue_release(issue_release)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> extract_request;
+	compute_exposure --> evaluate_release;
+	evaluate_release -.-> finance_review;
+	evaluate_release -.-> issue_release;
+	extract_request --> validate_order;
+	fetch_credit_profile --> compute_exposure;
+	finance_review --> issue_release;
+	validate_order -.-> fetch_credit_profile;
+	validate_order -.-> issue_release;
+	issue_release --> __end__;
+	classDef default fill:#1e293b,stroke:#7dd3fc,stroke-width:2px,color:#ffffff
+	classDef first fill:#0f172a,stroke:#7dd3fc,stroke-width:2px,color:#ffffff
+	classDef last fill:#0f172a,stroke:#7dd3fc,stroke-width:2px,color:#ffffff
+```
+
+### Ruta directa (reproducible)
+
+```
+> uv run python workflow_demo.py
+CASO_ID=CRE-008 | VARIANT=Credit | SEMILLA=2135
+Main customer: C-1003
+  credit limit     : USD 30,000
+  current exposure : USD 10,000
+Review amount      : USD 15,000
+
+=== WORKFLOW FINISHED ===
+Order released for C-1003: 4 x KRN-900X | amount USD 9,802.00 | available credit after order USD 10,198.00.
+status: released
+```
+
+Recorrido: `extract_request → validate_order → fetch_credit_profile → compute_exposure → evaluate_release → issue_release`. No pasa por `finance_review`. Con la misma semilla y la misma solicitud, el resultado es siempre el mismo.
+
+### Las otras rutas
+
+| Solicitud (`--request`) | Recorrido | Resultado |
+|---|---|---|
+| Libera 9 KRN-900X para C-1003 | … → `evaluate_release` → `finance_review` → `issue_release` | `pending_review`: línea insuficiente y monto de revisión |
+| Libera 15 CYC-3DX para C-1003 | `validate_order` → `issue_release` (sin consultar crédito) | `rejected`: stock insuficiente (14 disponibles) |
+| Libera el pedido de C-1003 por favor | `extract_request` → `validate_order` → `issue_release` | `blocked`: faltan SKU y cantidad |
+
+Memo de crédito de la ruta de revisión:
+
+```
+{'type': 'sale_release_credit_exception',
+ 'customer_id': 'C-1003',
+ 'credit_status': 'ok',
+ 'order': '9 x KRN-900X = USD 22,054.50',
+ 'credit_limit_usd': 30000,
+ 'current_exposure_usd': 10000,
+ 'available_credit_usd': 20000.0,
+ 'projected_exposure_usd': 32054.5,
+ 'projected_utilization_pct': 106.8,
+ 'reasons': ['Insufficient credit line: exposure + order = 32,054.50 exceeds limit 30,000.00.',
+             'Order of 22,054.50 reaches review amount 15,000.00.'],
+ 'question': '¿Aprueba Finanzas liberar este pedido como excepcion?'}
+```
+
+### Pruebas automáticas (`tests/test_release_workflow.py`)
+
+El nodo extractor se reemplaza por uno fijo, así que el grafo completo se prueba sin LLM.
+
+| Prueba | Resultado |
+|---|---|
+| Ruta directa: 4 KRN-900X para C-1003 | `RELEASE`, `released`, línea disponible 20 000 |
+| Ruta de revisión: 9 KRN-900X para C-1003 | `REVIEW`, `pending_review`, exposición proyectada 32 054,50 |
+| Stock insuficiente: 15 CYC-3DX | `rejected`, sin `credit_status` en el State (no consultó crédito) |
+| Cliente inexistente | `rejected`, motivo "Customer not found" |
+| Datos faltantes | `blocked` |
+| Aristas condicionales | Cada valor de `status` y `decision` va al nodo esperado |
+
+```
+> uv run pytest
+20 passed
+```
