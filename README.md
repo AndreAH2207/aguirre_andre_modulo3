@@ -22,7 +22,7 @@ uv sync
 
 Copiar `.env.example` como `.env` y completar la clave. El archivo trae dos opciones:
 
-- **OpenAI** (como en clase): `MODEL_PROVIDER=openai` y `OPENAI_API_KEY`.
+- **OpenAI**: `MODEL_PROVIDER=openai` y `OPENAI_API_KEY`.
 - **Proveedor compatible** (usado en este proyecto: Gemini con `gemini-3.1-flash-lite`): descomentar el bloque `openai_compatible` y completar `PROVIDER_API_KEY`.
 
 `ROUTER_STRATEGY` puede ser `deterministic`, `model` o `hybrid` (por defecto).
@@ -41,6 +41,13 @@ uv run python bootstrap_db.py
 # Agente: pregunta en lenguaje natural (Enter usa "Libera 9 KRN-900X para C-1003")
 uv run python main.py
 
+# Workflow de liberación de venta (LangGraph). Sin --request usa "Libera 4 KRN-900X para C-1003"
+uv run python workflow_demo.py
+uv run python workflow_demo.py --request "Libera 9 KRN-900X para C-1003" --show-state
+
+# Diagrama del workflow (Mermaid)
+uv run python workflow_demo.py --diagram
+
 # Evaluación del router: 12 casos con las tres estrategias
 uv run python benchmark.py
 
@@ -55,7 +62,9 @@ uv run pytest
 | `case_config.py` | CASO_ID, semilla y los tres parámetros de crédito |
 | `data.py` | Clientes, productos e inventario |
 | `bootstrap_db.py` | Crea la tabla `sales` con las ventas históricas |
-| `rules.py` | Reglas deterministas de liberación (`calculate_release`) |
+| `rules.py` | Reglas deterministas: validación del pedido (`validate_order`) y decisión de crédito (`evaluate_release`) |
+| `release_state.py`, `release_workflow.py` | State y workflow de liberación de venta en LangGraph |
+| `workflow_demo.py` | Ejecuta el workflow desde la terminal |
 | `router.py` | Routers determinista, por modelo e híbrido |
 | `rag.py`, `docs/` | Recuperación semántica sobre las políticas de crédito y liberación |
 | `tools.py` | Tools del agente (producto, stock, cliente, liberación, ventas, políticas) |
@@ -63,6 +72,6 @@ uv run pytest
 | `schemas.py`, `context.py`, `model_factory.py` | Salidas estructuradas, contexto y configuración del modelo |
 | `main.py` | Punto de entrada |
 | `benchmark.py`, `benchmark_cases.json` | Evaluación del router |
-| `tests/` | Pruebas del router, SQL y tools |
+| `tests/` | Pruebas del router, SQL, tools y workflow |
 | `HITOS.md` | Avance por hito |
 | `EVIDENCIAS.md` | Evidencias de cada hito |
