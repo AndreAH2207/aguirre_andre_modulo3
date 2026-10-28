@@ -185,3 +185,74 @@ Los datos del pedido (cliente, SKU, cantidad y monto), los datos de crédito con
 
 **¿Qué campo del State sería innecesario o peligroso guardar?**
 Innecesario: la ficha completa del cliente o del producto. Del producto solo se usa el precio, y la ficha del cliente duplicaría el estado, el límite y la exposición, que ya se guardan aparte. Además ata el workflow a la estructura de `data.py`. Peligroso: la clave de la API o la respuesta cruda del LLM. Desde el Hito 4, el State se guarda en el checkpoint, y cualquier secreto quedaría escrito en la base de datos.
+
+## Hito 4 · Retry, checkpoint y Human-in-the-Loop
+
+### Qué se construyó
+
+- **Checkpoint persistente:** `SqliteSaver` en `data/workflow_checkpoints.db`. Cada paso del workflow queda guardado bajo su `id_hilo`.
+- **Retry:** `RetryPolicy` solo en `fetch_credit_profile`, la consulta al servicio de crédito, que es la única dependencia externa. Hasta 3 intentos, espera inicial de 0,2 s que se duplica, y solo ante `TimeoutError` o `ConnectionError`. Con `SIMULATE_CREDIT_TIMEOUT=1`, el primer intento falla a propósito.
+- **Pausa humana:** `interrupt()` en `finance_review`, con el memo de crédito como contenido. El flujo queda detenido hasta que Finanzas / crédito responde.
+- **Respuesta de Finanzas validada:** contrato `FinanceDecision` con `decision` (`approve` o `reject`), `reviewer` obligatorio y `comment` opcional. Si la respuesta no es válida, el nodo vuelve a pausar con un mensaje de error; nunca aprueba por defecto.
+- **Estados finales nuevos:** `released_by_exception` (Finanzas aprobó) y `rejected_by_finance` (Finanzas rechazó).
+- **`workflow_demo.py`:** opciones `--thread-id` (el `id_hilo`), `--resume approve|reject`, `--reviewer` y `--comment`. Muestra el log de flujo pausado y, con `--show-state`, el estado persistido.
+
+### Qué falló
+
+**1. Reanudar con un `id_hilo` sin pedido pausado.**
+- Qué pasó: lo probé sin ningún control. LangGraph no encontró nada guardado, ignoró la respuesta de Finanzas y arrancó el workflow desde cero con un State vacío. El primer nodo falló con `KeyError: 'request_text'`. La aprobación nunca llegó al pedido que estaba esperando.
+- Corrección: el demo solo reanuda si el `id_hilo` está detenido en `finance_review`. Si no, responde `No paused release found for id_hilo '...'. Nothing to resume.`
+- El primer control que escribí solo revisaba si había algún paso pendiente. Falló con el `id_hilo` de la prueba anterior, porque el intento fallido había dejado guardado un paso pendiente en `extract_request`. Lo corregí para que revise específicamente `finance_review`.
+
+**2. Nueva solicitud sobre un `id_hilo` con un pedido pausado.**
+- Qué pasó: pausé "9 KRN-900X para C-1003" y envié "6 TTN-M40 para C-1010" con el mismo `id_hilo`. El workflow arrancó de nuevo y el pedido que esperaba a Finanzas pasó a ser el de C-1010. El de C-1003 se perdió sin aviso.
+- Qué hubiera pasado en producción: una excepción de crédito pendiente desaparece por un error al escribir el `id_hilo`.
+- Corrección: si el `id_hilo` tiene un pedido esperando a Finanzas, el demo no inicia una solicitud nueva y pide reanudarlo o usar otro `id_hilo`.
+
+**3. Servicio de crédito caído en todos los intentos.**
+- Qué pasó: el retry hizo los 3 intentos y luego el `TimeoutError` llegó sin capturar, así que el demo terminaba con un traceback.
+- Corrección: el demo captura el error y responde que el servicio no está disponible y que el pedido quedó guardado en su `id_hilo`. El checkpoint confirma que el pedido quedó en `fetch_credit_profile`.
+
+**4. Respuesta de Finanzas sin validar.**
+- Qué hubiera pasado: si la respuesta se interpretara como verdadero o falso, un texto como "no" contaría como aprobado, porque en Python todo texto no vacío es verdadero. Se liberaría un pedido que Finanzas quiso rechazar.
+- Corrección: el contrato `FinanceDecision` solo acepta `approve` o `reject`. La prueba `test_invalid_finance_answer_pauses_again` envía `"no"` y comprueba que el flujo vuelve a pausar.
+
+### Qué aprendí
+
+- Retry y reglas de negocio son cosas distintas. El retry tiene sentido cuando repetir puede dar otro resultado (un servicio que se recupera). Una regla da siempre el mismo resultado con los mismos datos, así que repetirla no sirve.
+- Con checkpoint, el `id_hilo` es la identidad del pedido. Equivocarse de `id_hilo` no es un detalle: puede reanudar el pedido equivocado o perder uno pendiente.
+- Al reanudar, el nodo con la pausa se ejecuta otra vez desde el inicio. Todo lo que hay antes de `interrupt()` tiene que poder repetirse sin efectos.
+
+### Qué decisión cambió después de probar
+
+- Agregué los dos controles de `id_hilo` en el demo después de ver, probándolo, que LangGraph no protege esos casos.
+- El control para reanudar pasó de "hay algún paso pendiente" a "está detenido en `finance_review`".
+- Se descartó agregar una opción para continuar un pedido que quedó detenido por el servicio de crédito; el demo solo informa que quedó guardado.
+
+### Evidencia
+
+En `EVIDENCIAS.md`, sección Hito 4: log de flujo pausado, reanudación aprobada y rechazada, fallo transitorio con retry, regla de negocio rechazada sin retry, controles de `id_hilo`, servicio caído y pruebas automáticas.
+
+### Campos nuevos del State
+
+| Campo | Lo escribe | Para qué sirve |
+|---|---|---|
+| `finance_decision` | `finance_review` | `approve` o `reject`: lo que decidió Finanzas / crédito |
+| `reviewer` | `finance_review` | Quién aprobó o rechazó la excepción |
+| `finance_comment` | `finance_review` | Motivo dado por Finanzas (opcional) |
+
+`decision` no cambia después de la revisión: sigue en `REVIEW`. Es intencional. `decision` guarda lo que decidió la **regla** y `finance_decision` lo que decidió la **persona**; separados dejan registro de quién decidió qué. El resultado final del pedido se lee en `status`.
+
+### Preguntas de razonamiento
+
+**¿Qué error merece retry y cuál no?**
+Merece retry un error técnico transitorio del servicio de crédito, como un `TimeoutError` o un `ConnectionError`: el servicio puede recuperarse y el segundo intento puede funcionar. No merecen retry las reglas de negocio (stock insuficiente, cliente en hold, línea insuficiente, monto de revisión), los datos faltantes ni una respuesta inválida de Finanzas. Con los mismos datos dan siempre el mismo resultado, y reintentarlas solo gasta tiempo. Por eso el `RetryPolicy` está en un único nodo y solo para esos dos tipos de error.
+
+**¿Qué se pierde si no existe checkpoint?**
+El pedido que espera a Finanzas. La revisión puede tardar horas, y sin checkpoint el estado (monto, exposición, motivos) vive solo en la memoria del proceso: si el proceso termina, se pierde. Además no se puede reanudar: sin checkpoint, LangGraph rechaza la reanudación con `RuntimeError: Cannot use Command(resume=...) without checkpointer`. Habría que empezar de nuevo, volver a llamar al LLM y al servicio de crédito, y los datos podrían haber cambiado respecto de lo que vio Finanzas. Lo mismo pasa si el servicio de crédito falla en los 3 intentos: con checkpoint, el pedido queda guardado en el nodo que falló.
+
+**¿Por qué un side effect antes de `interrupt()` puede ser peligroso?**
+Porque al reanudar, el nodo se vuelve a ejecutar desde el principio, y en este diseño puede ejecutarse varias veces más si Finanzas envía una respuesta inválida. Si antes de la pausa se enviara un aviso a Finanzas o se sumara el pedido a la exposición del cliente, eso ocurriría dos o tres veces: avisos duplicados o una exposición inflada. Por eso `finance_review` solo arma el memo antes de pausar, que es un cálculo sin efectos.
+
+**¿Qué pasa si se reanuda con otro `id_hilo`?**
+Lo probé. Si el `id_hilo` no tiene un pedido pausado, LangGraph no encuentra nada guardado: ignora la respuesta de Finanzas, arranca el workflow desde cero con un State vacío y falla en el primer nodo (`KeyError: 'request_text'`). El pedido real sigue pausado en su propio `id_hilo`, sin respuesta. En el caso inverso, una solicitud nueva en el `id_hilo` de un pedido pausado reemplazó ese pedido. Por eso el demo controla ambos casos antes de ejecutar.

@@ -267,3 +267,137 @@ El nodo extractor se reemplaza por uno fijo, así que el grafo completo se prueb
 > uv run pytest
 20 passed
 ```
+
+## Hito 4 · Retry, checkpoint y Human-in-the-Loop
+
+Las líneas de parámetros de la semilla (CASO_ID, límite, exposición y monto de revisión) se imprimen al inicio de cada ejecución; se omiten aquí para abreviar.
+
+### 1. Flujo pausado
+
+```
+> uv run python workflow_demo.py --thread-id caso1-pausa --request "Libera 9 KRN-900X para C-1003"
+id_hilo: caso1-pausa
+[fetch_credit_profile] attempt 1 for C-1003
+
+=== FLOW PAUSED: WAITING FOR FINANCE / CREDIT ===
+{'type': 'sale_release_credit_exception',
+ 'customer_id': 'C-1003',
+ 'credit_status': 'ok',
+ 'order': '9 x KRN-900X = USD 22,054.50',
+ 'credit_limit_usd': 30000,
+ 'current_exposure_usd': 10000,
+ 'available_credit_usd': 20000.0,
+ 'projected_exposure_usd': 32054.5,
+ 'projected_utilization_pct': 106.8,
+ 'reasons': ['Insufficient credit line: exposure + order = 32,054.50 exceeds '
+             'limit 30,000.00.',
+             'Order of 22,054.50 reaches review amount 15,000.00.'],
+ 'question': '¿Aprueba Finanzas liberar este pedido como excepcion?'}
+
+Resume with the SAME --thread-id and --resume approve|reject
+```
+
+### 2a. Reanudación aprobada (mismo `id_hilo`)
+
+```
+> uv run python workflow_demo.py --thread-id caso1-pausa --resume approve --reviewer ana.finanzas --comment "Buen historial de pago"
+id_hilo: caso1-pausa
+Resuming with Finance answer: {'decision': 'approve', 'reviewer': 'ana.finanzas', 'comment': 'Buen historial de pago'}
+
+=== WORKFLOW FINISHED ===
+Order released by exception for C-1003: 9 x KRN-900X | amount USD 22,054.50 | reviewer: ana.finanzas. Comment: Buen historial de pago
+status: released_by_exception
+```
+
+### 2b. Reanudación rechazada
+
+Pedido de 7 KRN-900X para C-1003: pausa solo por monto de revisión (17 153,50 ≥ 15 000), sin problema de línea.
+
+```
+> uv run python workflow_demo.py --thread-id caso2-rechazo --request "Libera 7 KRN-900X para C-1003"
+=== FLOW PAUSED: WAITING FOR FINANCE / CREDIT ===
+ 'reasons': ['Order of 17,153.50 reaches review amount 15,000.00.'],
+
+> uv run python workflow_demo.py --thread-id caso2-rechazo --resume reject --reviewer ana.finanzas --comment "Supera el monto sin respaldo"
+=== WORKFLOW FINISHED ===
+Order rejected by Finance for C-1003: 7 x KRN-900X | amount USD 17,153.50 | reviewer: ana.finanzas. Comment: Supera el monto sin respaldo
+status: rejected_by_finance
+```
+
+### 3. Fallo transitorio provocado y retry
+
+```
+> SIMULATE_CREDIT_TIMEOUT=1 uv run python workflow_demo.py --thread-id caso3-retry --request "Libera 4 KRN-900X para C-1003"
+id_hilo: caso3-retry
+[fetch_credit_profile] attempt 1 for C-1003
+[fetch_credit_profile] simulated transient failure: credit service timeout
+[fetch_credit_profile] attempt 2 for C-1003
+
+=== WORKFLOW FINISHED ===
+Order released for C-1003: 4 x KRN-900X | amount USD 9,802.00 | available credit after order USD 10,198.00.
+status: released
+```
+
+### 4. Regla de negocio rechazada sin retry
+
+Con el mismo fallo simulado activo:
+
+```
+> SIMULATE_CREDIT_TIMEOUT=1 uv run python workflow_demo.py --thread-id caso4-negocio --request "Libera 15 CYC-3DX para C-1003"
+id_hilo: caso4-negocio
+
+=== WORKFLOW FINISHED ===
+Order rejected: Insufficient stock: requested 15, available 14.
+status: rejected
+```
+
+No aparece ningún `[fetch_credit_profile] attempt`: el rechazo lo decide una regla en `validate_order`, el pedido nunca llega al servicio de crédito y no hay nada que reintentar. Contrasta con el caso 3, que tiene la misma variable de fallo activa.
+
+### 5. Controles de `id_hilo`
+
+| Situación | Salida |
+|---|---|
+| Reanudar con un `id_hilo` sin pedido pausado (`credito-nuevo-999`) | `No paused release found for id_hilo 'credito-nuevo-999'. Nothing to resume.` |
+| Reanudar un `id_hilo` ya terminado (`credito-001`) | `No paused release found for id_hilo 'credito-001'. Nothing to resume.` |
+| Nueva solicitud en un `id_hilo` con pedido pausado (`fix1`) | `id_hilo 'fix1' has an order waiting for Finance. Resume it with --resume approve\|reject or use another --thread-id.` |
+
+Tras el tercer caso, `--resume reject` sobre `fix1` cerró el pedido original (C-1003, 9 unidades): no fue reemplazado.
+
+Sin el control, reanudar con un `id_hilo` sin pausa terminaba así:
+
+```
+KeyError: 'request_text'
+During task with name 'extract_request'
+```
+
+### 6. Servicio de crédito caído en los 3 intentos
+
+```
+id_hilo: fix2
+[fetch_credit_profile] attempt 1 for C-1003
+[fetch_credit_profile] attempt 2 for C-1003
+[fetch_credit_profile] attempt 3 for C-1003
+
+Credit service unavailable after 3 attempts. The order is saved in id_hilo 'fix2'; try again later.
+```
+
+Estado guardado después del fallo: `next = ('fetch_credit_profile',)`.
+
+### Pruebas automáticas (`tests/test_release_workflow.py`)
+
+El extractor se reemplaza por uno fijo y el checkpoint por uno en memoria: no se usa el LLM ni se crean archivos.
+
+| Prueba | Qué comprueba |
+|---|---|
+| `test_review_route_pauses_with_credit_memo` | El flujo se detiene en `finance_review` con el memo |
+| `test_resume_approve_releases_by_exception` | Aprobar → `released_by_exception`, con revisor |
+| `test_resume_reject_rejects_by_finance` | Rechazar → `rejected_by_finance` |
+| `test_invalid_finance_answer_pauses_again` | La respuesta `"no"` vuelve a pausar con error; luego acepta una válida |
+| `test_transient_credit_failure_is_retried` | Un fallo transitorio → 2 intentos → liberado |
+| `test_business_rejection_is_not_retried` | Rechazo por stock → 0 intentos al servicio de crédito |
+| `test_credit_service_down_keeps_order_at_failed_node` | Servicio caído → 3 intentos, `TimeoutError`, pedido guardado en `fetch_credit_profile` |
+
+```
+> uv run pytest
+26 passed
+```
