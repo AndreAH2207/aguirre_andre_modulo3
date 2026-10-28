@@ -241,7 +241,7 @@ En `EVIDENCIAS.md`, sección Hito 4: log de flujo pausado, reanudación aprobada
 | `reviewer` | `finance_review` | Quién aprobó o rechazó la excepción |
 | `finance_comment` | `finance_review` | Motivo dado por Finanzas (opcional) |
 
-`decision` no cambia después de la revisión: sigue en `REVIEW`. Es intencional. `decision` guarda lo que decidió la **regla** y `finance_decision` lo que decidió la **persona**; separados dejan registro de quién decidió qué. El resultado final del pedido se lee en `status`.
+`decision` no cambia después de la revisión: sigue en `REVIEW`. Es intencional. `decision` guarda lo que decidió la regla y `finance_decision` lo que decidió la **persona**; separados dejan registro de quién decidió qué. El resultado final del pedido se lee en `status`.
 
 ### Preguntas de razonamiento
 
