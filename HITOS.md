@@ -256,3 +256,65 @@ Porque al reanudar, el nodo se vuelve a ejecutar desde el principio, y en este d
 
 **¿Qué pasa si se reanuda con otro `id_hilo`?**
 Lo probé. Si el `id_hilo` no tiene un pedido pausado, LangGraph no encuentra nada guardado: ignora la respuesta de Finanzas, arranca el workflow desde cero con un State vacío y falla en el primer nodo (`KeyError: 'request_text'`). El pedido real sigue pausado en su propio `id_hilo`, sin respuesta. En el caso inverso, una solicitud nueva en el `id_hilo` de un pedido pausado reemplazó ese pedido. Por eso el demo controla ambos casos antes de ejecutar.
+
+## Hito 5 · MCP: desacoplar capacidades
+
+### Qué se construyó
+
+- `mcp_server.py`: servidor MCP por stdio con capacidades de solo lectura.
+  - 4 tools: `get_customer_credit` (estado, límite, exposición y línea disponible), `get_stock`, `calculate_release` (decisión de liberación, sin aprobar nada) y `sales_summary` (SQL parametrizado con filtros de SKU, cliente y año).
+  - 2 resources: `policy://credit` y `policy://release`, con las políticas de `docs/`.
+- `mcp_client_demo.py`: cliente MCP sin LLM. Lista tools y resources, llama a tres tools y lee una política.
+- `mcp_agent.py`: agente conectado al mismo servidor, con el modelo del proyecto. Responde una consulta compuesta usando varias tools.
+- `sales.py`: la consulta de ventas salió de `tools.py` a una función compartida. La usan el agente del Hito 2 y el servidor MCP, así que hay una sola consulta SQL.
+- `tests/test_mcp.py`: 6 pruebas que levantan el servidor real por stdio y lo consultan con un cliente sin LLM.
+
+Lo que **no** expone el servidor, a propósito:
+
+| Capacidad | Por qué no |
+|---|---|
+| SQL libre (`ejecutar_sql(sql)`) | Cualquier consumidor podría leer, modificar o borrar toda la base |
+| Aprobar o rechazar excepciones de crédito | Es la decisión de Finanzas / crédito dentro del workflow. Expuesta, cualquier cliente MCP podría liberar un pedido |
+| Fichas completas de clientes | `get_customer_credit` entrega solo los datos de crédito, no la ficha (por ejemplo, no el nombre) |
+| Escrituras (cambiar stock o exposición) | Ningún consumidor necesita escribir para decidir una liberación |
+| Parámetros de la semilla, como resource | Publicaría el monto de revisión: quien lo conozca podría dividir un pedido grande en varios menores para evitar la revisión. El límite y la exposición ya se obtienen por cliente con `get_customer_credit` |
+
+### Qué falló
+
+**1. Resultados sin formato estructurado.**
+- Qué pasó: con las tools declaradas sin opciones, el servidor devolvía el resultado solo como texto JSON y `structured_content` llegaba vacío (`None`). Fallaron 4 de las 6 pruebas de MCP con `TypeError: 'NoneType' object is not subscriptable`.
+- Qué hubiera pasado: el cliente y el agente tendrían que interpretar texto en vez de recibir campos, y cualquier cambio en el formato del texto rompería a los consumidores.
+- Corrección: cada tool se declara con `structured_output=True`.
+
+**2. El servidor no arrancaba.**
+- Qué pasó: con ese cambio, el servidor se cerraba al iniciar con `InvalidSignature: Function get_customer_credit: return type <class 'dict'> is not serializable for structured output`. Las pruebas fallaban con `MCPError` de conexión, porque el proceso del servidor moría antes de responder.
+- Corrección: el tipo de retorno pasó de `dict` a `dict[str, Any]`, que es lo que exige esta versión del SDK (MCP 2.3.0) para la salida estructurada.
+
+### Qué aprendí
+
+- Antes de MCP, cualquier aplicación que quisiera saber si un pedido se libera tenía que importar los módulos de Python del proyecto. Con MCP, la capacidad tiene un contrato (nombre, argumentos y resultado) y cualquier consumidor la usa sin conocer el código.
+- El mínimo privilegio se decide por capacidad, no por archivo: el servidor puede usar `rules.py` completo, pero solo expone la decisión, no la aprobación.
+- Con stdio, el servidor no puede imprimir nada en la salida estándar, porque esa salida es el canal del protocolo.
+
+### Qué decisión cambió después de probar
+
+- Tools declaradas con salida estructurada y tipo `dict[str, Any]`, después de los dos fallos anteriores.
+- Antes de construir, se descartó publicar los parámetros de la semilla como resource, por el riesgo de que alguien divida pedidos para quedar bajo el monto de revisión.
+
+### Evidencia
+
+En `EVIDENCIAS.md`, sección Hito 5: diagrama antes/después de MCP, salida del cliente sin LLM (`list_tools`, `call_tool`, `read_resource`), respuesta del agente con la misma capacidad y pruebas automáticas.
+
+### Preguntas de razonamiento
+
+**¿Qué problema de acoplamiento existe antes de MCP?**
+Antes, el agente del Hito 2 y el workflow importan directamente `data.py`, `rules.py` y la base de ventas. Cualquier otra aplicación que quisiera la misma decisión de crédito (por ejemplo, un tablero de Finanzas) tendría que importar esos mismos archivos, usar el mismo lenguaje y depender de su estructura interna. Si cambia un nombre de función o un campo de `data.py`, se rompen todos los consumidores. Con MCP, los consumidores dependen del contrato de las tools, no del código.
+
+**¿Por qué no deberíamos exponer `ejecutar_sql(sql)`?**
+Porque el consumidor decidiría la consulta completa: podría leer cualquier tabla, modificar datos o borrarlos, y si el consumidor es un agente, el SQL lo escribiría un LLM. Además ya no habría un contrato: cada consumidor dependería de cómo están hechas las tablas. `sales_summary` expone una sola consulta fija y parametrizada; el consumidor solo elige los filtros.
+
+**¿Qué capacidad NO expondrías por MCP y por qué?**
+La aprobación de excepciones de crédito. Es una decisión que corresponde a Finanzas / crédito, y en el diseño ocurre dentro del workflow con pausa y `id_hilo`. Expuesta como tool, cualquier cliente MCP, incluido un agente, podría liberar un pedido de un cliente en hold o sin línea. `calculate_release` dice qué se debe hacer con el pedido, pero no lo aprueba.
+
+**¿Qué gana otra aplicación al consumir el mismo servidor?**
+Obtiene exactamente la misma decisión, con las mismas reglas y los mismos motivos, sin copiar código. Se comprobó: el cliente sin LLM y el agente obtienen `REVIEW` para 9 KRN-900X de C-1003, con los mismos dos motivos. Si mañana cambia una regla en `rules.py`, todos los consumidores la reciben a la vez.

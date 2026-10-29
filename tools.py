@@ -1,13 +1,12 @@
 import asyncio
 import json
-import sqlite3
 
 from agents import RunContextWrapper
 from agents.decorators import tool
 from agents.tool_context import ToolContext
 
 import rules
-from bootstrap_db import DB_PATH
+import sales
 from context import AppContext
 from data import PRODUCTS,STOCK,CUSTOMERS
 from rag import search as rag_search
@@ -60,27 +59,7 @@ async def sales_summary(
 )->dict:
     """Resume ventas historicas, filtrando opcionalmente por SKU, cliente y/o anio."""
     await asyncio.sleep(0)
-    if not DB_PATH.exists():
-        return _error("database_missing","Ejecuta primero: uv run python bootstrap_db.py")
-
-    where=[]; params=[]
-    if sku:
-        where.append("sku=?"); params.append(sku.upper())
-    if customer_id:
-        where.append("customer_id=?"); params.append(customer_id.upper())
-    if year:
-        where.append("substr(sale_date,1,4)=?"); params.append(str(year))
-    clause=" WHERE "+" AND ".join(where) if where else ""
-    query=(
-        "SELECT COUNT(*) AS transactions, "
-        "COALESCE(SUM(quantity),0) AS units, "
-        "ROUND(COALESCE(SUM(net_revenue_usd),0),2) AS revenue_usd "
-        "FROM sales"+clause
-    )
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory=sqlite3.Row
-        row=dict(conn.execute(query,tuple(params)).fetchone())
-    return {"ok":True,"filters":{"sku":sku,"customer_id":customer_id,"year":year},"source_ref":"[SQL:sales]",**row}
+    return sales.sales_summary(sku,customer_id,year)
 
 
 # RAG como capacidad.

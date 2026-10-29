@@ -401,3 +401,141 @@ El extractor se reemplaza por uno fijo y el checkpoint por uno en memoria: no se
 > uv run pytest
 26 passed
 ```
+
+## Hito 5 · MCP: desacoplar capacidades
+
+### Diagrama antes de MCP
+
+Cada consumidor importa directamente los módulos de Python. Una aplicación nueva tendría que hacer lo mismo.
+
+```mermaid
+flowchart LR
+    agent[Agente Hito 2<br/>engine.py + tools.py]
+    workflow[Workflow<br/>release_workflow.py]
+    other[Otra aplicación<br/>p. ej. tablero de Finanzas]
+    data[(data.py)]
+    rules[rules.py]
+    db[(business.db)]
+    docs[docs/ políticas]
+
+    agent --> data
+    agent --> rules
+    agent --> db
+    agent --> docs
+    workflow --> data
+    workflow --> rules
+    other -. tendría que importar el código .-> data
+    other -.-> rules
+    other -.-> db
+
+    classDef default fill:#1e293b,stroke:#7dd3fc,stroke-width:2px,color:#ffffff
+```
+
+### Diagrama después de MCP
+
+Los consumidores usan un contrato: tools y resources por stdio. Solo el servidor conoce los módulos internos.
+
+```mermaid
+flowchart LR
+    client[Cliente sin LLM<br/>mcp_client_demo.py]
+    mcpagent[Agente<br/>mcp_agent.py]
+    other[Otra aplicación]
+    server{{Servidor MCP · stdio<br/>mcp_server.py}}
+    data[(data.py)]
+    rules[rules.py]
+    sales[sales.py]
+    db[(business.db)]
+    docs[docs/ políticas]
+
+    client -- list_tools / call_tool --> server
+    mcpagent -- tools MCP --> server
+    other -- mismo contrato --> server
+    server -- get_customer_credit / get_stock --> data
+    server -- calculate_release --> rules
+    server -- sales_summary --> sales
+    sales --> db
+    server -- policy://credit<br/>policy://release --> docs
+
+    classDef default fill:#1e293b,stroke:#7dd3fc,stroke-width:2px,color:#ffffff
+```
+
+### Cliente MCP sin LLM: `list_tools`, `call_tool` y `read_resource`
+
+```
+> uv run python mcp_client_demo.py
+=== MCP CONNECTION (stdio) ===
+protocol: 2026-07-28
+
+=== list_tools ===
+- get_customer_credit: Credit profile of a customer: status, credit limit, current exposure and available credit.
+- get_stock: Current available stock of a known SKU.
+- calculate_release: Release decision for an order: RELEASE, REVIEW (Finance) or REJECT. Read-only: approves nothing.
+- sales_summary: Historical sales with optional filters (SKU, customer, year). Fixed parameterized SQL.
+
+=== call_tool get_stock(KRN-900X) ===
+{'ok': True, 'sku': 'KRN-900X', 'available_units': 45, 'source': 'inventory'}
+
+=== call_tool get_customer_credit(C-1003) ===
+{'ok': True, 'customer_id': 'C-1003', 'credit_status': 'ok', 'credit_limit_usd': 30000, 'current_exposure_usd': 10000, 'available_credit_usd': 20000.0, 'source': 'credit_service'}
+
+=== call_tool calculate_release(C-1003, KRN-900X, 9) ===
+{'ok': True, 'decision': 'REVIEW', 'order_amount_usd': 22054.5, 'reasons': ['Insufficient credit line: exposure + order = 32,054.50 exceeds limit 30,000.00.', 'Order of 22,054.50 reaches review amount 15,000.00.']}
+
+=== list_resources ===
+- policy://credit
+- policy://release
+
+=== read_resource policy://credit ===
+# Política de crédito
+
+## Clientes en hold
+Un cliente con estado de crédito hold está bloqueado. Ningún pedido de un cliente en hold se libera de forma automática: ...
+```
+
+### Agente con el mismo servidor: consulta compuesta
+
+```
+> uv run python mcp_agent.py
+Query: Revisa la linea de credito de C-1003, el stock de KRN-900X y si se puede liberar un pedido de 9 unidades de KRN-900X para C-1003.
+
+=== AGENT + MCP ===
+{
+  "answer": "El pedido no puede ser liberado automáticamente en este momento. Debido a que el monto del pedido (22,054.50 USD) supera el límite de crédito disponible, la solicitud ha sido marcada como REVIEW y debe ser revisada por el departamento de Finanzas y Crédito.",
+  "facts": [
+    "Estado de crédito del cliente C-1003: OK (Límite: 30,000 USD, Exposición actual: 10,000 USD, Crédito disponible: 20,000 USD).",
+    "Stock actual del SKU KRN-900X: 45 unidades.",
+    "Decisión de liberación: REVIEW.",
+    "Motivos de revisión: El monto del pedido (22,054.50 USD) excede el crédito disponible y supera el límite de revisión establecido (15,000 USD)."
+  ],
+  "warnings": [
+    "La suma de la exposición actual y el nuevo pedido (32,054.50 USD) excede el límite total de crédito del cliente (30,000 USD)."
+  ]
+}
+```
+
+### Misma capacidad, dos consumidores
+
+| Consumidor | Llamada | Decisión | Motivos |
+|---|---|---|---|
+| Cliente sin LLM | `calculate_release(C-1003, KRN-900X, 9)` | `REVIEW` | Línea insuficiente (32 054,50 > 30 000) y monto de revisión (22 054,50 ≥ 15 000) |
+| Agente | La misma tool, elegida por el modelo | `REVIEW` | Los mismos dos motivos |
+
+La decisión la toma `rules.py` dentro del servidor; el agente solo la reporta.
+
+### Pruebas automáticas (`tests/test_mcp.py`)
+
+Cada prueba levanta el servidor real por stdio y usa un cliente sin LLM.
+
+| Prueba | Resultado |
+|---|---|
+| `list_tools` | Exactamente `get_customer_credit`, `get_stock`, `calculate_release` y `sales_summary` |
+| `call_tool calculate_release` | 9 KRN-900X para C-1003 → `REVIEW` con 2 motivos |
+| `call_tool get_customer_credit` | Línea disponible 20 000, sin la ficha completa (no incluye el nombre) |
+| Cliente inexistente | `ok: false` |
+| `call_tool sales_summary` | C-1003 en 2026: 28 559,80 |
+| Resources | Solo `policy://credit` y `policy://release`; la política de crédito se lee completa |
+
+```
+> uv run pytest
+32 passed
+```

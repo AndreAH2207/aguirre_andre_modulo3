@@ -57,6 +57,16 @@ uv run python workflow_demo.py --thread-id demo-03 --resume reject --reviewer an
 # Diagrama del workflow (Mermaid)
 uv run python workflow_demo.py --diagram
 
+# MCP: cliente sin LLM (lista y llama tools, lee una política por stdio)
+uv run python mcp_client_demo.py
+
+# MCP: agente conectado al mismo servidor (consulta compuesta por defecto o la que se indique)
+uv run python mcp_agent.py
+uv run python mcp_agent.py "¿Se puede liberar 1 NXS-G10 para C-9999?"
+
+# MCP Inspector (interfaz web; requiere Node.js)
+uv run mcp dev mcp_server.py
+
 # Evaluación del router: 12 casos con las tres estrategias
 uv run python benchmark.py
 
@@ -94,10 +104,13 @@ Los checkpoints se guardan en `data/workflow_checkpoints.db`. Cada `id_hilo` es 
 | `router.py` | Routers determinista, por modelo e híbrido |
 | `rag.py`, `docs/` | Recuperación semántica sobre las políticas de crédito y liberación |
 | `tools.py` | Tools del agente (producto, stock, cliente, liberación, ventas, políticas) |
+| `sales.py` | Consulta SQL parametrizada de ventas, compartida por el agente y el servidor MCP |
+| `mcp_server.py` | Servidor MCP (stdio): 4 tools de solo lectura y 2 resources de políticas |
+| `mcp_client_demo.py`, `mcp_agent.py` | Consumidores del servidor MCP: cliente sin LLM y agente |
 | `engine.py` | Elige la ruta y ejecuta el agente con las tools de esa ruta |
 | `schemas.py`, `context.py`, `model_factory.py` | Salidas estructuradas, contexto y configuración del modelo |
 | `main.py` | Punto de entrada |
 | `benchmark.py`, `benchmark_cases.json` | Evaluación del router |
-| `tests/` | Pruebas del router, SQL, tools y workflow |
+| `tests/` | Pruebas del router, SQL, tools, workflow y MCP |
 | `HITOS.md` | Avance por hito |
 | `EVIDENCIAS.md` | Evidencias de cada hito |
