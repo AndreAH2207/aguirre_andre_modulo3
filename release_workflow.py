@@ -9,7 +9,9 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import RetryPolicy, interrupt
 from pydantic import ValidationError
 
+import rag
 import rules
+import sales
 from data import CUSTOMERS, PRODUCTS, STOCK
 from model_factory import build_model
 from release_state import FinanceDecision, ReleaseRequest, ReleaseState
@@ -131,10 +133,33 @@ def evaluate_release(state: ReleaseState) -> dict:
     return {"decision": result["decision"], "reasons": result["reasons"], "status": "evaluated"}
 
 
-def route_after_evaluation(state: ReleaseState) -> Literal["finance_review", "issue_release"]:
+def route_after_evaluation(state: ReleaseState) -> Literal["gather_review_context", "issue_release"]:
     if state.get("decision") == rules.REVIEW:
-        return "finance_review"
+        return "gather_review_context"
     return "issue_release"
+
+
+def lookup_policies(reasons: list[str]) -> list[str]:
+    """RAG: policy sections related to the review reasons (source refs only)."""
+    results = rag.search("Politica de credito aplicable: " + " ".join(reasons), top_k=2)
+    return [item["source_ref"] for item in results]
+
+
+def gather_review_context(state: ReleaseState) -> dict:
+    """Context for Finance: customer sales history (SQL) and applicable policy (RAG).
+
+    Informative only: the decision is already taken by the rules and does not change here.
+    """
+    history = sales.sales_summary(customer_id=state["customer_id"])
+    sales_history = (
+        {key: history[key] for key in ("transactions", "units", "revenue_usd")} if history.get("ok") else {}
+    )
+    try:
+        policy_refs = lookup_policies(state["reasons"])
+    except Exception as exc:  # The memo can go to Finance without policy context.
+        print(f"[gather_review_context] policy lookup unavailable: {type(exc).__name__}")
+        policy_refs = []
+    return {"sales_history": sales_history, "policy_refs": policy_refs}
 
 
 def build_credit_memo(state: ReleaseState) -> dict:
@@ -151,8 +176,17 @@ def build_credit_memo(state: ReleaseState) -> dict:
         "projected_exposure_usd": state["projected_exposure_usd"],
         "projected_utilization_pct": round(utilization, 1),
         "reasons": state["reasons"],
+        "sales_history": state.get("sales_history", {}),
+        "sources": _sources(state),
         "question": "¿Aprueba Finanzas liberar este pedido como excepcion?",
     }
+
+
+def _sources(state: ReleaseState) -> list[str]:
+    sources = ["[RULES:rules.py]"]
+    if state.get("sales_history"):
+        sources.append("[SQL:sales]")
+    return sources + state.get("policy_refs", [])
 
 
 def finance_review(state: ReleaseState) -> dict:
@@ -191,7 +225,8 @@ def issue_release(state: ReleaseState) -> dict:
         return {
             "message": (
                 f"Order {verb} for {state['customer_id']}: {state['quantity']} x {state['sku']} | "
-                f"amount USD {state['order_amount_usd']:,.2f} | reviewer: {state['reviewer']}.{comment}"
+                f"amount USD {state['order_amount_usd']:,.2f} | reviewer: {state['reviewer']}.{comment} "
+                f"Sources: {', '.join(_sources(state))}"
             )
         }
     return {
@@ -213,6 +248,7 @@ def build_graph(extractor=extract_request, checkpointer=CHECKPOINTER):
     builder.add_node("fetch_credit_profile", fetch_credit_profile, retry_policy=CREDIT_SERVICE_RETRY)
     builder.add_node("compute_exposure", compute_exposure)
     builder.add_node("evaluate_release", evaluate_release)
+    builder.add_node("gather_review_context", gather_review_context)
     builder.add_node("finance_review", finance_review)
     builder.add_node("issue_release", issue_release)
 
@@ -228,8 +264,9 @@ def build_graph(extractor=extract_request, checkpointer=CHECKPOINTER):
     builder.add_conditional_edges(
         "evaluate_release",
         route_after_evaluation,
-        {"finance_review": "finance_review", "issue_release": "issue_release"},
+        {"gather_review_context": "gather_review_context", "issue_release": "issue_release"},
     )
+    builder.add_edge("gather_review_context", "finance_review")
     builder.add_edge("finance_review", "issue_release")
     builder.add_edge("issue_release", END)
 

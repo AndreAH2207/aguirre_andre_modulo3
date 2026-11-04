@@ -12,7 +12,7 @@ Caso **CRE-008** · Variante **Crédito** · Semilla **2135**
 - `rules.py`: la función `calculate_release(customer_id, sku, quantity)` decide si un pedido se libera (`RELEASE`), pasa a Finanzas (`REVIEW`) o se rechaza (`REJECT`). Orden de evaluación: existencia → stock → hold → línea → monto de revisión. Las causas de revisión se juntan en `reasons`.
 - `main.py`: punto de entrada. Imprime CASO_ID, semilla y parámetros, crea la base si no existe, pide cliente, SKU y cantidad, y muestra la decisión de `calculate_release`. Todavía no usa LLM, por eso pide los datos por separado en vez de una pregunta en lenguaje natural.
 - `pyproject.toml` y `.env.example`. Por ahora no hay dependencias, porque el Hito 1 usa solo Python estándar.
-- 10 solicitudes de ejemplo clasificadas a mano (ver `EVIDENCIAS.md`).
+- 10 solicitudes de ejemplo clasificadas a mano.
 
 ### Qué falló
 
@@ -28,16 +28,17 @@ Caso **CRE-008** · Variante **Crédito** · Semilla **2135**
 
 ### Qué decisión cambió después de probar
 
-- La exposición pasó de porcentaje del límite a monto fijo sorteado de una lista (5 000 a 25 000). Con eso C-1003 tiene 20 000 disponibles, y los tres parámetros cambian alguna decisión (ver tabla de verificación en `EVIDENCIAS.md`).
+- La exposición pasó de porcentaje del límite a monto fijo sorteado de una lista (5 000 a 25 000). Con eso C-1003 tiene 20 000 disponibles, y los tres parámetros cambian alguna decisión.
 - Cliente en hold: al principio lo trataba como rechazo directo. Lo cambié a revisión de Finanzas, porque el enunciado (sección 04, fila D) lo pone como excepción con aprobación humana.
 - Los datos estaban en archivos JSON; los pasé a diccionarios en `data.py`, que es más simple de leer y de modificar durante la demo. La carpeta `data/` queda para la base de ventas.
 
 ### Evidencia
 
-- Tabla "consulta → capacidad esperada → justificación" en `EVIDENCIAS.md`.
-- `python case_config.py` ejecutado dos veces con los mismos valores.
-- Resultados de `calculate_release` para cada tipo de salida en `EVIDENCIAS.md`.
-- Ejecución de `python main.py` con un pedido de ejemplo en `EVIDENCIAS.md`.
+En `EVIDENCIAS.md`:
+
+- A.1: escenario de la semilla (mismos valores en cada ejecución), datos mínimos y primer commit de datos y reglas.
+- A.2: tabla "consulta → capacidad esperada → justificación".
+- 1.4: resultados de `calculate_release` para cada tipo de salida.
 
 ### Preguntas de razonamiento
 
@@ -65,8 +66,7 @@ Documental: las políticas, por ejemplo qué hacer con un cliente en hold o qui�
 
 - La cuenta de OpenAI no tenía créditos (error 429 `insufficient_quota`). Todo lo que usa el LLM quedó sin poder ejecutarse.
 - Al pasar a Gemini, `gemini-2.5-flash` ya no estaba disponible para cuentas nuevas (error 404). Después, `gemini-3.8-flash` agotó su cuota gratuita de 20 solicitudes diarias con un solo benchmark.
-- El router por reglas manda "¿Explica que es la exposición crediticia?" a `tools` en vez de `direct`, porque contiene "exposicion" y la regla de tools se revisa antes que la de preguntas conceptuales. El híbrido no lo corrige: la confianza de la regla (0,92) supera el umbral, así que nunca consulta al modelo.
-- El router por modelo (`gemini-3.1-flash-lite`) manda "¿Puedo liberar el pedido?" a `tools` aunque no tiene cliente ni SKU. En este caso las reglas sí aciertan (`clarify`).
+- El router falló dos casos del benchmark: las reglas mandan "¿Explica que es la exposición crediticia?" a `tools`, y el modelo manda "¿Puedo liberar el pedido?" a `tools` aunque no tiene cliente ni SKU. Por qué ocurrió cada uno: `EVIDENCIAS.md` 1.6.
 - El caso 12 del benchmark se redactó primero con la palabra "ventas" ("riesgo crediticio en ventas B2B") y el router lo mandaba a SQL. Lo cambié por "¿Por qué las empresas B2B venden a plazo?".
 
 ### Qué aprendí
@@ -84,7 +84,12 @@ Documental: las políticas, por ejemplo qué hacer con un cliente en hold o qui�
 
 ### Evidencia
 
-En `EVIDENCIAS.md`, sección Hito 2: benchmark de los tres routers, errores del router explicados, 3 pruebas RAG (incluida una que no usa RAG), 3 SQL, 3 tools y ejecuciones del agente de punta a punta.
+En `EVIDENCIAS.md`:
+
+- 1.6: benchmark de 12 casos con los tres routers, errores y caso de baja confianza.
+- 2.1: 3 consultas RAG, incluida una que no usa RAG.
+- 2.2: 3 consultas SQL.
+- 2.3: pruebas de tools.
 
 ### Preguntas de razonamiento
 
@@ -148,32 +153,16 @@ En la ejecución no hubo fallos: las 20 pruebas pasan y las cuatro rutas funcion
 
 ### Qué decisión cambió después de probar
 
-- `finance_review` queda sin `interrupt()` en este hito. `interrupt()` necesita checkpoint, que es parte del Hito 4; en este hito el nodo solo deja el pedido como `pending_review`.
-- El State no guarda las fichas completas de cliente y producto: solo los campos que usa la decisión.
+- `interrupt()` pasó al Hito 4 y el State quedó con campos explícitos, por los problemas 4 y 5 de "Qué falló".
 - Los nodos se nombraron según los pasos de un analista de crédito (validar pedido, consultar perfil de crédito, calcular exposición, evaluar, revisión de Finanzas, emitir resultado) en lugar de nombres genéricos.
 
 ### Evidencia
 
-En `EVIDENCIAS.md`, sección Hito 3: diagrama del workflow, ejecución de la ruta directa, las otras tres rutas y las pruebas automáticas.
+En `EVIDENCIAS.md`:
 
-### Campos del State
-
-| Campo | Lo escribe | Para qué sirve |
-|---|---|---|
-| `request_text` | Entrada | El texto original de la solicitud; lo lee el extractor |
-| `customer_id` | `extract_request` | Cliente del pedido |
-| `sku` | `extract_request` | Producto del pedido |
-| `quantity` | `extract_request` | Unidades del pedido |
-| `order_amount_usd` | `validate_order` | Precio × cantidad. Es el monto que comparan las reglas de línea y de monto de revisión |
-| `credit_status` | `fetch_credit_profile` | `ok` o `hold` |
-| `credit_limit_usd` | `fetch_credit_profile` | Límite de crédito del cliente (para C-1003 viene de la semilla) |
-| `current_exposure_usd` | `fetch_credit_profile` | Lo que el cliente ya debe (para C-1003 viene de la semilla) |
-| `available_credit_usd` | `compute_exposure` | Límite − exposición. Es lo primero que mira Finanzas |
-| `projected_exposure_usd` | `compute_exposure` | Exposición + pedido. Es el valor que la regla compara con el límite |
-| `decision` | `validate_order` o `evaluate_release` | `RELEASE`, `REVIEW` o `REJECT`. Controla la segunda arista condicional |
-| `reasons` | `validate_order` o `evaluate_release` | Motivos legibles de la decisión |
-| `status` | Todos los nodos | En qué etapa va el pedido. Controla la primera arista condicional y el mensaje final |
-| `message` | `extract_request` o `issue_release` | Respuesta final para el usuario |
+- A.3: diagrama del workflow.
+- 2.4: ejecución reproducible de la ruta directa y las otras salidas del workflow.
+- A.4: explicación de cada campo del State.
 
 ### Preguntas de razonamiento
 
@@ -225,23 +214,17 @@ Innecesario: la ficha completa del cliente o del producto. Del producto solo se 
 
 ### Qué decisión cambió después de probar
 
-- Agregué los dos controles de `id_hilo` en el demo después de ver, probándolo, que LangGraph no protege esos casos.
-- El control para reanudar pasó de "hay algún paso pendiente" a "está detenido en `finance_review`".
+- Agregué los dos controles de `id_hilo` después de ver, probándolo, que LangGraph no protege esos casos (problemas 1 y 2 de "Qué falló").
 - Se descartó agregar una opción para continuar un pedido que quedó detenido por el servicio de crédito; el demo solo informa que quedó guardado.
 
 ### Evidencia
 
-En `EVIDENCIAS.md`, sección Hito 4: log de flujo pausado, reanudación aprobada y rechazada, fallo transitorio con retry, regla de negocio rechazada sin retry, controles de `id_hilo`, servicio caído y pruebas automáticas.
+En `EVIDENCIAS.md`:
 
-### Campos nuevos del State
-
-| Campo | Lo escribe | Para qué sirve |
-|---|---|---|
-| `finance_decision` | `finance_review` | `approve` o `reject`: lo que decidió Finanzas / crédito |
-| `reviewer` | `finance_review` | Quién aprobó o rechazó la excepción |
-| `finance_comment` | `finance_review` | Motivo dado por Finanzas (opcional) |
-
-`decision` no cambia después de la revisión: sigue en `REVIEW`. Es intencional. `decision` guarda lo que decidió la regla y `finance_decision` lo que decidió la **persona**; separados dejan registro de quién decidió qué. El resultado final del pedido se lee en `status`.
+- 1.5: log de flujo pausado, reanudación aprobada y rechazada con el mismo `id_hilo`, y controles de `id_hilo`.
+- 1.3: fallo transitorio provocado con retry, y servicio caído en los 3 intentos.
+- 1.4: regla de negocio rechazada sin retry.
+- A.4: campos nuevos del State (`finance_decision`, `reviewer`, `finance_comment`).
 
 ### Preguntas de razonamiento
 
@@ -255,7 +238,7 @@ El pedido que espera a Finanzas. La revisión puede tardar horas, y sin checkpoi
 Porque al reanudar, el nodo se vuelve a ejecutar desde el principio, y en este diseño puede ejecutarse varias veces más si Finanzas envía una respuesta inválida. Si antes de la pausa se enviara un aviso a Finanzas o se sumara el pedido a la exposición del cliente, eso ocurriría dos o tres veces: avisos duplicados o una exposición inflada. Por eso `finance_review` solo arma el memo antes de pausar, que es un cálculo sin efectos.
 
 **¿Qué pasa si se reanuda con otro `id_hilo`?**
-Lo probé. Si el `id_hilo` no tiene un pedido pausado, LangGraph no encuentra nada guardado: ignora la respuesta de Finanzas, arranca el workflow desde cero con un State vacío y falla en el primer nodo (`KeyError: 'request_text'`). El pedido real sigue pausado en su propio `id_hilo`, sin respuesta. En el caso inverso, una solicitud nueva en el `id_hilo` de un pedido pausado reemplazó ese pedido. Por eso el demo controla ambos casos antes de ejecutar.
+LangGraph no encuentra nada guardado en ese `id_hilo`: ignora la respuesta de Finanzas, arranca el workflow desde cero y falla en el primer nodo. El pedido real sigue pausado en su propio `id_hilo`, sin respuesta. Y en el caso inverso, una solicitud nueva en el `id_hilo` de un pedido pausado lo reemplaza. Lo probé (problemas 1 y 2 de "Qué falló"), y por eso `release_runner.py` controla ambos casos antes de ejecutar.
 
 ## Hito 5 · MCP: desacoplar capacidades
 
@@ -269,15 +252,7 @@ Lo probé. Si el `id_hilo` no tiene un pedido pausado, LangGraph no encuentra na
 - `sales.py`: la consulta de ventas salió de `tools.py` a una función compartida. La usan el agente del Hito 2 y el servidor MCP, así que hay una sola consulta SQL.
 - `tests/test_mcp.py`: 6 pruebas que levantan el servidor real por stdio y lo consultan con un cliente sin LLM.
 
-Lo que **no** expone el servidor, a propósito:
-
-| Capacidad | Por qué no |
-|---|---|
-| SQL libre (`ejecutar_sql(sql)`) | Cualquier consumidor podría leer, modificar o borrar toda la base |
-| Aprobar o rechazar excepciones de crédito | Es la decisión de Finanzas / crédito dentro del workflow. Expuesta, cualquier cliente MCP podría liberar un pedido |
-| Fichas completas de clientes | `get_customer_credit` entrega solo los datos de crédito, no la ficha (por ejemplo, no el nombre) |
-| Escrituras (cambiar stock o exposición) | Ningún consumidor necesita escribir para decidir una liberación |
-| Parámetros de la semilla, como resource | Publicaría el monto de revisión: quien lo conozca podría dividir un pedido grande en varios menores para evitar la revisión. El límite y la exposición ya se obtienen por cliente con `get_customer_credit` |
+Lo que el servidor **no** expone, y por qué, está en `DECISIONES.md` (decisión 7).
 
 ### Qué falló
 
@@ -303,7 +278,11 @@ Lo que **no** expone el servidor, a propósito:
 
 ### Evidencia
 
-En `EVIDENCIAS.md`, sección Hito 5: diagrama antes/después de MCP, salida del cliente sin LLM (`list_tools`, `call_tool`, `read_resource`), respuesta del agente con la misma capacidad y pruebas automáticas.
+En `EVIDENCIAS.md`:
+
+- 2.5: `list_tools` + `call_tool` sin LLM, y pruebas del servidor por stdio.
+- 2.6: misma capacidad usada luego por el agente, con una consulta compuesta.
+- A.5: diagrama antes y después de MCP.
 
 ### Preguntas de razonamiento
 
@@ -318,3 +297,85 @@ La aprobación de excepciones de crédito. Es una decisión que corresponde a Fi
 
 **¿Qué gana otra aplicación al consumir el mismo servidor?**
 Obtiene exactamente la misma decisión, con las mismas reglas y los mismos motivos, sin copiar código. Se comprobó: el cliente sin LLM y el agente obtienen `REVIEW` para 9 KRN-900X de C-1003, con los mismos dos motivos. Si mañana cambia una regla en `rules.py`, todos los consumidores la reciben a la vez.
+
+## Hito 6 · Integración y reflexión
+
+### Qué se construyó
+
+- **Ruta `release` en el router:** "Libera…" con cliente y SKU ya no va a la ruta `tools`, sino al workflow de liberación (reglas, retry, pausa para Finanzas e `id_hilo`). El router tiene 6 destinos: `rag`, `sql`, `tools`, `release`, `direct` y `clarify`.
+- **MCP dentro del flujo principal:** las rutas `tools` y `sql` del agente consumen el servidor MCP. Cada ruta ve solo sus tools: `sql` solo `sales_summary`; `tools` solo `get_customer_credit` y `get_stock`.
+- **Contexto para Finanzas:** nuevo nodo `gather_review_context` antes de la pausa. Agrega al memo el historial de ventas del cliente (SQL) y las secciones de política aplicables (RAG). Es informativo: la decisión ya la tomaron las reglas y no cambia.
+- **Fuentes en la respuesta final:** el mensaje de un pedido revisado por Finanzas cita `[RULES:rules.py]`, `[SQL:sales]` y las secciones `[RAG:...]` usadas.
+- **`release_runner.py`:** los controles de `id_hilo` y de servicio caído, compartidos por `main.py`, `workflow_demo.py` y el caso end-to-end.
+- **`main.py` como punto de entrada único:** recibe la consulta, la enruta, y responde con el agente o ejecuta el workflow. Acepta `--thread-id` y `--resume approve|reject`.
+- **`e2e_demo.py`:** caso completo reproducible para C-1003: política (RAG), facturación (SQL por MCP), línea y stock (MCP), liberación con pausa y reanudación aprobada.
+
+### Qué falló
+
+**1. El workflow no se podía ejecutar desde `main.py`.**
+- Qué pasó: la primera ejecución del caso end-to-end falló en el paso de liberación con `RuntimeError: AgentRunner.run_sync() cannot be called when an event loop is already running`. El workflow es síncrono (su extractor usa `Runner.run_sync`) y `main.py` es asíncrono.
+- Corrección: `main.py` ejecuta el workflow en un hilo aparte con `asyncio.to_thread`.
+
+**2. Aviso de Windows al terminar el caso end-to-end (sin resolver).**
+- Qué pasa: al final aparece `Cancelling an overlapped future failed ... OSError: [WinError 6] Controlador no válido`.
+- Lo que se comprobó: sale después de que todo terminó correctamente, y el programa finaliza con código 0. No aparece con una sola conexión MCP, ni al abrir y cerrar dos conexiones sin LLM. Una pausa al cerrar cada conexión no lo eliminó y se revirtió.
+- Queda como limitación conocida: es un aviso del cierre de procesos en Windows y no afecta los resultados.
+
+**3. El RAG a veces cita solo el título de la política.**
+- Qué pasa: en una ejecución, una de las fuentes fue `[RAG:credit_policy.md#Política de crédito]`, que es solo el título del documento. La división por secciones deja el título como un fragmento propio.
+- Queda como limitación: no cambia ninguna decisión, pero agrega una fuente poco útil al memo.
+
+### Qué aprendí
+
+- Integrar no es solo llamar a cada pieza: aparecieron problemas que no existían por separado, como mezclar código síncrono y asíncrono.
+- Que el router decida cuándo empieza el workflow mantiene esa decisión en un lugar que se evalúa con el benchmark. Si `main.py` detectara "libera" por su cuenta, la decisión quedaría fuera de toda prueba.
+- El LLM no es estable: con la misma consulta y el mismo modelo, el router por modelo mandó "¿Puedo liberar el pedido?" a `tools` en el Hito 2 y a `clarify` en el Hito 6. Las reglas dieron siempre el mismo resultado.
+
+### Qué decisión cambió después de probar
+
+- La liberación pasó de la ruta `tools` (que solo calculaba la decisión) a una ruta propia que ejecuta el workflow con pausa real.
+- La ruta `tools` del agente dejó de tener `calculate_release`: consultar el estado y liberar un pedido son caminos distintos.
+- El workflow se ejecuta en un hilo aparte, después del error con el event loop.
+
+### Evidencia
+
+- `EVIDENCIAS.md` A.6: caso completo reproducible.
+- `EVIDENCIAS.md` 1.6, 1.5 y 2.6: benchmark con la ruta `release`, liberación y reanudación desde `main.py`, y filtro de tools MCP por ruta.
+- `EVIDENCIAS.md` A.3: diagrama del workflow integrado.
+- `DECISIONES.md`, `USO_IA.md` y `VIDEO_LINK.txt`.
+
+### Limitaciones
+
+| Limitación | Efecto |
+|---|---|
+| Datos en memoria y SQLite local | No hay conexión a un ERP o CRM: stock, clientes y exposición son datos de ejemplo |
+| El servicio de crédito es simulado | Lee `data.py`; el fallo transitorio se provoca con una variable de entorno |
+| Aprobar una excepción no actualiza la exposición | Un segundo pedido del mismo cliente se evalúa con la exposición anterior |
+| Sin usuarios ni permisos | Cualquiera que ejecute `--resume` puede aprobar: el campo `reviewer` registra un nombre, pero no lo verifica |
+| Proveedor gratuito con cuota | `gemini-3.1-flash-lite` tiene un límite diario de solicitudes; con la cuota agotada fallan el router por modelo, el agente, el extractor y el RAG |
+| Palabras clave del router | Errores con confianza alta, como "exposición crediticia" → `tools`, que el híbrido no corrige |
+| RAG por secciones | Puede citar el título del documento como fuente (ver "Qué falló") |
+| Aviso de Windows al cerrar | Aparece al final del caso end-to-end; no afecta los resultados |
+
+### Riesgos
+
+| Riesgo | Por qué importa | Mitigación actual |
+|---|---|---|
+| Aprobaciones sin autenticación | En crédito, liberar una excepción es la decisión más sensible del proceso | `FinanceDecision` exige `reviewer` y una decisión explícita; falta verificar identidad |
+| El LLM extrae un cliente, SKU o cantidad equivocados | Se evaluaría un pedido distinto del pedido real | Cliente y SKU se validan contra los datos; si faltan, el flujo se bloquea. Una cantidad mal leída sí pasaría |
+| Equivocarse de `id_hilo` | Se reanuda el pedido equivocado o se reemplaza uno pendiente | `release_runner.py` controla los dos casos |
+| Dependencia de un proveedor externo | Sin el LLM no se puede iniciar una liberación | El retry solo cubre el servicio de crédito, no al proveedor del LLM |
+
+### Preguntas de razonamiento
+
+**¿Qué parte es probabilística y qué parte determinista?**
+Probabilístico: el router por modelo (cuando las reglas dudan), la extracción de cliente, SKU y cantidad en el workflow, la búsqueda semántica del RAG y la redacción de las respuestas del agente. Determinista: el router por reglas, las reglas de liberación (`rules.py`), los cálculos de exposición, la consulta SQL, las aristas condicionales del workflow, el retry y la validación de la respuesta de Finanzas. La decisión de liberar, revisar o rechazar es siempre determinista; el LLM solo interpreta la solicitud y redacta.
+
+**¿Qué cambiaría si esto operara con SAP/ERP/CRM reales?**
+`data.py` y `business.db` se reemplazarían por consultas al ERP (stock, maestro de clientes, exposición desde cuentas por cobrar), y `fetch_credit_profile` llamaría al módulo de crédito real; ahí el retry deja de ser una simulación. Aprobar una excepción tendría que registrar la liberación en el ERP con una escritura idempotente después de la pausa, nunca antes. Finanzas aprobaría desde su propia aplicación, con usuarios autenticados, y el servidor MCP necesitaría autorización por tool. El checkpoint pasaría de un archivo SQLite a una base compartida.
+
+**¿Cuál es el mayor riesgo del diseño actual?**
+Que cualquier persona que ejecute `--resume approve` libera una excepción de crédito. El sistema registra un nombre de revisor, pero no verifica quién es ni si tiene permiso. Las reglas son correctas y el flujo se pausa donde debe, pero el último control (que decida una persona autorizada) no está protegido.
+
+**¿Qué simplificarías si tuvieras que mantenerlo un año?**
+Dejaría un solo camino para las capacidades operacionales: `tools.py` conserva tools locales (producto, stock, cliente, liberación) que el flujo principal ya no usa, porque esas consultas pasan por MCP. También dejaría un solo router (el híbrido) en lugar de tres estrategias configurables, y revisaría las palabras clave con los errores registrados en el benchmark.

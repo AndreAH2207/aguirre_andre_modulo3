@@ -14,6 +14,7 @@ class Route(str, Enum):
     RAG="rag"
     SQL="sql"
     TOOLS="tools"
+    RELEASE="release"
     DIRECT="direct"
     CLARIFY="clarify"
 

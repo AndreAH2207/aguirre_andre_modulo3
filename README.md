@@ -38,7 +38,19 @@ uv run python case_config.py
 # Crear la base de ventas históricas (data/business.db)
 uv run python bootstrap_db.py
 
-# Agente: pregunta en lenguaje natural (Enter usa "Libera 9 KRN-900X para C-1003")
+# Caso completo de C-1003: política (RAG), facturación (SQL por MCP), crédito y stock (MCP),
+# liberación con pausa para Finanzas y reanudación aprobada
+uv run python e2e_demo.py
+
+# Punto de entrada: el router decide si responde el agente o se ejecuta el workflow
+uv run python main.py "¿Cuánto le hemos facturado a C-1003 en 2026?"
+uv run python main.py "¿Cuánta línea de crédito disponible tiene C-1003?"
+
+# Solicitud de liberación: va al workflow; si requiere Finanzas, se pausa en el id_hilo indicado
+uv run python main.py --thread-id pedido-01 "Libera 9 KRN-900X para C-1003"
+uv run python main.py --thread-id pedido-01 --resume approve --reviewer ana.finanzas --comment "Excepcion aprobada"
+
+# Sin argumentos pregunta en la terminal (Enter usa "Libera 9 KRN-900X para C-1003")
 uv run python main.py
 
 # Workflow de liberación de venta (LangGraph). Sin --request usa "Libera 4 KRN-900X para C-1003"
@@ -101,16 +113,21 @@ Los checkpoints se guardan en `data/workflow_checkpoints.db`. Cada `id_hilo` es 
 | `rules.py` | Reglas deterministas: validación del pedido (`validate_order`) y decisión de crédito (`evaluate_release`) |
 | `release_state.py`, `release_workflow.py` | State y workflow de liberación de venta en LangGraph |
 | `workflow_demo.py` | Ejecuta el workflow desde la terminal: iniciar, pausar y reanudar por `id_hilo` |
-| `router.py` | Routers determinista, por modelo e híbrido |
+| `release_runner.py` | Ejecuta el workflow por `id_hilo` con los controles de reanudación y de servicio caído |
+| `router.py` | Routers determinista, por modelo e híbrido, con 6 destinos (`rag`, `sql`, `tools`, `release`, `direct`, `clarify`) |
 | `rag.py`, `docs/` | Recuperación semántica sobre las políticas de crédito y liberación |
 | `tools.py` | Tools del agente (producto, stock, cliente, liberación, ventas, políticas) |
 | `sales.py` | Consulta SQL parametrizada de ventas, compartida por el agente y el servidor MCP |
 | `mcp_server.py` | Servidor MCP (stdio): 4 tools de solo lectura y 2 resources de políticas |
 | `mcp_client_demo.py`, `mcp_agent.py` | Consumidores del servidor MCP: cliente sin LLM y agente |
-| `engine.py` | Elige la ruta y ejecuta el agente con las tools de esa ruta |
+| `engine.py` | Elige la ruta y ejecuta el agente: RAG local; `sql` y `tools` por el servidor MCP, cada ruta solo con sus tools |
 | `schemas.py`, `context.py`, `model_factory.py` | Salidas estructuradas, contexto y configuración del modelo |
-| `main.py` | Punto de entrada |
+| `main.py` | Punto de entrada: router + agente + workflow (`--thread-id`, `--resume`) |
+| `e2e_demo.py` | Caso completo reproducible de C-1003 |
 | `benchmark.py`, `benchmark_cases.json` | Evaluación del router |
 | `tests/` | Pruebas del router, SQL, tools, workflow y MCP |
 | `HITOS.md` | Avance por hito |
-| `EVIDENCIAS.md` | Evidencias de cada hito |
+| `EVIDENCIAS.md` | Evidencia de proceso y aprendizaje, pruebas mínimas y anexo con la evidencia de cada hito |
+| `DECISIONES.md` | Decisiones de diseño: alternativas, trade-off, riesgo y cambios para producción |
+| `USO_IA.md` | Uso de IA como copiloto |
+| `git_log.txt`, `VIDEO_LINK.txt` | Historial de commits y enlace al video técnico |

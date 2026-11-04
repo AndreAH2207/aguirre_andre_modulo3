@@ -47,6 +47,9 @@ class ReleaseState(TypedDict, total=False):
     decision: str
     reasons: list[str]
 
+    sales_history: dict
+    policy_refs: list[str]
+
     finance_decision: str
     reviewer: str
     finance_comment: str | None

@@ -11,11 +11,9 @@ CASE_ID = "CRE-008"
 VARIANT = "Credit"
 SEED = 2135
 
-# Customer that receives the generated credit limit and exposure.
 MAIN_CUSTOMER = "C-1003"
 
 CREDIT_LIMIT_OPTIONS = [30000, 50000, 80000, 120000]
-# Highest value is below the lowest limit: exposure never exceeds the limit.
 CURRENT_EXPOSURE_OPTIONS = [5000, 10000, 15000, 20000, 25000]
 REVIEW_AMOUNT_OPTIONS = [10000, 15000, 20000, 25000]
 
@@ -36,7 +34,6 @@ PARAMETERS = generate_parameters()
 
 
 def print_parameters() -> None:
-    # CASO_ID and SEMILLA are the labels used in the assignment (Anexo A).
     print(f"CASO_ID={CASE_ID} | VARIANT={VARIANT} | SEMILLA={SEED}")
     print(f"Main customer: {MAIN_CUSTOMER}")
     print(f"  credit limit     : USD {PARAMETERS['credit_limit_usd']:,}")

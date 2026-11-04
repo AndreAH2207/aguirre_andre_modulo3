@@ -13,6 +13,8 @@ SQL_KEYWORDS=["ventas","vendimos","vendido","vendio","facturacion","facturado","
 TOOLS_KEYWORDS=["stock","sku","cliente","precio","cotiza","libera","pedido","linea","credito","limite",
                 "exposicion","deuda","debe","saldo","disponible","bloqueado","hold","inventario"]
 NEEDS_IDS_KEYWORDS=["precio","libera","pedido"]
+# A release request starts the release workflow (pause for Finance, id_hilo).
+RELEASE_KEYWORDS=["libera"]
 ID_PATTERN=r"(C-\d{4}|[A-Z]{2,}-[A-Z0-9-]+)"
 
 
@@ -48,6 +50,8 @@ class DeterministicRouter:
                     reason="Faltan identificadores de cliente o SKU",
                     clarification_question="¿Que cliente, SKU y cantidad debo considerar?",
                 )
+            if any(k in q for k in RELEASE_KEYWORDS):
+                return RouteDecision(route=Route.RELEASE,confidence=0.92,reason="Solicitud de liberacion de venta")
             return RouteDecision(route=Route.TOOLS,confidence=0.92,reason="Dato operacional actual")
 
         if q.startswith(("que es","explica","define","cual es la diferencia")):
@@ -67,8 +71,8 @@ class ModelRouter:
                 "Clasifica la consulta en exactamente una ruta. "
                 "rag=politicas de credito y liberacion de ventas (documentos); "
                 "sql=ventas historicas, facturacion o agregaciones del pasado; "
-                "tools=estado actual: producto, stock, cliente, linea de credito, exposicion, "
-                "o una solicitud de liberar un pedido; "
+                "tools=consulta del estado actual: producto, stock, cliente, linea de credito o exposicion; "
+                "release=solicitud de liberar un pedido concreto con cliente, SKU y cantidad; "
                 "direct=conocimiento general que no necesita datos internos; "
                 "clarify=informacion esencial faltante o solicitud ambigua. "
                 "No respondas la consulta. Devuelve solo la decision estructurada."

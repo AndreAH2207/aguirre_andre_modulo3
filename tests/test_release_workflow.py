@@ -3,12 +3,22 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
 import release_workflow
+from bootstrap_db import bootstrap
 from release_workflow import build_graph, route_after_evaluation, route_after_validation
+
+POLICY_REF = "[RAG:credit_policy.md#Línea de crédito]"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def database():
+    bootstrap()
 
 
 @pytest.fixture(autouse=True)
-def reset_credit_attempts():
+def reset_credit_attempts(monkeypatch):
     release_workflow.credit_service_attempts.clear()
+    # The policy lookup uses embeddings (LLM provider); tests use a fixed result.
+    monkeypatch.setattr(release_workflow, "lookup_policies", lambda reasons: [POLICY_REF])
 
 
 def fake_extractor(customer_id, sku, quantity):
@@ -56,7 +66,7 @@ def test_missing_data_is_blocked():
 def test_conditional_edges():
     assert route_after_validation({"status": "rejected"}) == "issue_release"
     assert route_after_validation({"status": "validated"}) == "fetch_credit_profile"
-    assert route_after_evaluation({"decision": "REVIEW"}) == "finance_review"
+    assert route_after_evaluation({"decision": "REVIEW"}) == "gather_review_context"
     assert route_after_evaluation({"decision": "RELEASE"}) == "issue_release"
 
 
@@ -115,3 +125,27 @@ def test_credit_service_down_keeps_order_at_failed_node(monkeypatch):
         graph.invoke({"request_text": "test"}, config=config)
     assert release_workflow.credit_service_attempts["C-1003"] == 3
     assert graph.get_state(config).next == ("fetch_credit_profile",)
+
+
+# === Hito 6: SQL and RAG context for Finance ===
+def test_review_memo_includes_sales_history_and_policy():
+    _, _, result = start("C-1003", "KRN-900X", 9)
+    memo = result["__interrupt__"][0].value
+    assert memo["sales_history"]["revenue_usd"] == 28559.8
+    assert memo["sources"] == ["[RULES:rules.py]", "[SQL:sales]", POLICY_REF]
+
+
+def test_policy_lookup_failure_does_not_block_review(monkeypatch):
+    def unavailable(reasons):
+        raise ConnectionError("embeddings unavailable")
+    monkeypatch.setattr(release_workflow, "lookup_policies", unavailable)
+    graph, config, result = start("C-1003", "KRN-900X", 9)
+    assert result["__interrupt__"][0].value["sources"] == ["[RULES:rules.py]", "[SQL:sales]"]
+    assert graph.get_state(config).next == ("finance_review",)
+
+
+def test_context_does_not_change_the_decision():
+    graph, config, _ = start("C-1003", "KRN-900X", 9)
+    result = graph.invoke(Command(resume={"decision": "approve", "reviewer": "ana"}), config=config)
+    assert result["decision"] == "REVIEW"
+    assert "Sources: [RULES:rules.py], [SQL:sales]" in result["message"]

@@ -14,8 +14,8 @@ def test_routes_stock_to_tools():
     assert DeterministicRouter().route("¿Hay stock de CYC-3DX?").route==Route.TOOLS
 
 
-def test_routes_release_with_ids_to_tools():
-    assert DeterministicRouter().route("Libera 4 KRN-900X para C-1003").route==Route.TOOLS
+def test_routes_release_with_ids_to_release():
+    assert DeterministicRouter().route("Libera 4 KRN-900X para C-1003").route==Route.RELEASE
 
 
 def test_routes_release_without_ids_to_clarify():
